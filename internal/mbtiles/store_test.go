@@ -42,3 +42,50 @@ func TestPageCacheKiBPerConnection(t *testing.T) {
 		})
 	}
 }
+
+func TestCoordinateMetadataRejectsNonFiniteNumbers(t *testing.T) {
+	for _, value := range []string{"NaN,0,1,1", "0,-Inf,1,1", "0,0,+Inf,1"} {
+		if _, ok := parseNumbers4(value); ok {
+			t.Errorf("parseNumbers4(%q) accepted a non-finite number", value)
+		}
+	}
+	for _, value := range []string{"NaN,0,1", "0,-Inf,1", "0,0,+Inf"} {
+		if _, ok := parseNumbers3(value); ok {
+			t.Errorf("parseNumbers3(%q) accepted a non-finite number", value)
+		}
+	}
+}
+
+func TestValidateVectorLayers(t *testing.T) {
+	valid := []any{
+		map[string]any{
+			"id":          "water",
+			"fields":      map[string]any{"class": "Feature class"},
+			"description": "Water polygons",
+			"minzoom":     float64(0),
+			"maxzoom":     float64(14),
+			"custom":      true,
+		},
+	}
+	if err := validateVectorLayers(valid, 0, 14); err != nil {
+		t.Fatalf("valid vector layers rejected: %v", err)
+	}
+
+	for name, value := range map[string]any{
+		"not an array":         "water",
+		"entry not an object":  []any{"water"},
+		"missing id":           []any{map[string]any{"fields": map[string]any{}}},
+		"missing fields":       []any{map[string]any{"id": "water"}},
+		"field not a string":   []any{map[string]any{"id": "water", "fields": map[string]any{"class": true}}},
+		"description type":     []any{map[string]any{"id": "water", "fields": map[string]any{}, "description": true}},
+		"fractional minzoom":   []any{map[string]any{"id": "water", "fields": map[string]any{}, "minzoom": 1.5}},
+		"maxzoom out of range": []any{map[string]any{"id": "water", "fields": map[string]any{}, "maxzoom": float64(15)}},
+		"reversed zooms":       []any{map[string]any{"id": "water", "fields": map[string]any{}, "minzoom": float64(10), "maxzoom": float64(5)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateVectorLayers(value, 0, 14); err == nil {
+				t.Fatal("invalid vector layers accepted")
+			}
+		})
+	}
+}

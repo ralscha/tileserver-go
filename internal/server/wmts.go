@@ -3,16 +3,51 @@ package server
 import (
 	"bytes"
 	"encoding/xml"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ralscha/tileserver-go/internal/mbtiles"
 )
+
+const (
+	wmtsService   = "WMTS"
+	wmtsVersion   = "1.0.0"
+	wmtsStyle     = "default"
+	wmtsMatrixSet = "WebMercatorQuad"
+)
+
+type wmtsMatrixLimits struct {
+	minRow int
+	maxRow int
+	minCol int
+	maxCol int
+}
 
 func (s *Server) serveWMTS(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	request := strings.ToLower(queryValue(query, "REQUEST"))
-	if request == "" || request == "getcapabilities" {
+	service := queryValue(query, "SERVICE")
+	if service == "" {
+		s.writeOWSException(w, http.StatusBadRequest, "MissingParameterValue", "SERVICE", "SERVICE is required")
+		return
+	}
+	if !strings.EqualFold(service, wmtsService) {
+		s.writeOWSException(w, http.StatusBadRequest, "InvalidParameterValue", "SERVICE", "SERVICE must be WMTS")
+		return
+	}
+	requestValue := queryValue(query, "REQUEST")
+	if requestValue == "" {
+		s.writeOWSException(w, http.StatusBadRequest, "MissingParameterValue", "REQUEST", "REQUEST is required")
+		return
+	}
+	request := strings.ToLower(requestValue)
+	if request == "getcapabilities" {
+		if version := queryValue(query, "VERSION"); version != "" && version != wmtsVersion {
+			s.writeOWSException(w, http.StatusBadRequest, "InvalidParameterValue", "VERSION", "VERSION must be 1.0.0")
+			return
+		}
 		bundle := s.metadataForRequest(w, r)
 		if bundle != nil {
 			bundle.wmts.serve(w, r)
@@ -20,21 +55,136 @@ func (s *Server) serveWMTS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request != "gettile" {
-		s.writeOWSException(w, http.StatusBadRequest, "OperationNotSupported", "REQUEST", "unsupported WMTS request")
+		s.writeOWSException(w, http.StatusNotImplemented, "OperationNotSupported", requestValue, "unsupported WMTS request")
+		return
+	}
+	version := queryValue(query, "VERSION")
+	if version == "" {
+		s.writeOWSException(w, http.StatusBadRequest, "MissingParameterValue", "VERSION", "VERSION is required")
+		return
+	}
+	if version != wmtsVersion {
+		s.writeOWSException(w, http.StatusBadRequest, "InvalidParameterValue", "VERSION", "VERSION must be 1.0.0")
 		return
 	}
 	id := queryValue(query, "LAYER")
+	if id == "" {
+		s.writeOWSException(w, http.StatusBadRequest, "MissingParameterValue", "LAYER", "LAYER is required")
+		return
+	}
 	store := s.sources[id]
 	if store == nil {
-		s.writeOWSException(w, http.StatusNotFound, "InvalidParameterValue", "LAYER", "source not found")
+		s.writeOWSException(w, http.StatusBadRequest, "InvalidParameterValue", "LAYER", "source not found")
+		return
+	}
+	style := queryValue(query, "STYLE")
+	if style == "" {
+		s.writeOWSException(w, http.StatusBadRequest, "MissingParameterValue", "STYLE", "STYLE is required")
+		return
+	}
+	if style != wmtsStyle {
+		s.writeOWSException(w, http.StatusBadRequest, "InvalidParameterValue", "STYLE", "STYLE must be default")
+		return
+	}
+	format := queryValue(query, "FORMAT")
+	if format == "" {
+		s.writeOWSException(w, http.StatusBadRequest, "MissingParameterValue", "FORMAT", "FORMAT is required")
+		return
+	}
+	if !strings.EqualFold(format, store.Metadata().ContentType) {
+		s.writeOWSException(w, http.StatusBadRequest, "InvalidParameterValue", "FORMAT", "FORMAT is not supported for this layer")
+		return
+	}
+	matrixSet := queryValue(query, "TILEMATRIXSET")
+	if matrixSet == "" {
+		s.writeOWSException(w, http.StatusBadRequest, "MissingParameterValue", "TILEMATRIXSET", "TILEMATRIXSET is required")
+		return
+	}
+	if matrixSet != wmtsMatrixSet {
+		s.writeOWSException(w, http.StatusBadRequest, "InvalidParameterValue", "TILEMATRIXSET", "TILEMATRIXSET must be WebMercatorQuad")
 		return
 	}
 	matrix := queryValue(query, "TILEMATRIX")
-	if index := strings.LastIndexByte(matrix, ':'); index >= 0 {
-		matrix = matrix[index+1:]
+	if matrix == "" {
+		s.writeOWSException(w, http.StatusBadRequest, "MissingParameterValue", "TILEMATRIX", "TILEMATRIX is required")
+		return
 	}
-	tile := queryValue(query, "TILEROW") + "." + store.Metadata().Extension
-	s.serveTile(w, r, id, matrix, queryValue(query, "TILECOL"), tile)
+	z, err := strconv.Atoi(matrix)
+	if err != nil || z < 0 || z > 30 {
+		s.writeOWSException(w, http.StatusBadRequest, "InvalidParameterValue", "TILEMATRIX", "TILEMATRIX must be an integer between 0 and 30")
+		return
+	}
+	meta := store.Metadata()
+	if z < meta.MinZoom || z > meta.MaxZoom {
+		s.writeOWSException(w, http.StatusBadRequest, "InvalidParameterValue", "TILEMATRIX", "TILEMATRIX is outside the layer zoom range")
+		return
+	}
+	rowText := queryValue(query, "TILEROW")
+	if rowText == "" {
+		s.writeOWSException(w, http.StatusBadRequest, "MissingParameterValue", "TILEROW", "TILEROW is required")
+		return
+	}
+	row, err := strconv.Atoi(rowText)
+	if err != nil || row < 0 {
+		s.writeOWSException(w, http.StatusBadRequest, "InvalidParameterValue", "TILEROW", "TILEROW must be a non-negative integer")
+		return
+	}
+	columnText := queryValue(query, "TILECOL")
+	if columnText == "" {
+		s.writeOWSException(w, http.StatusBadRequest, "MissingParameterValue", "TILECOL", "TILECOL is required")
+		return
+	}
+	column, err := strconv.Atoi(columnText)
+	if err != nil || column < 0 {
+		s.writeOWSException(w, http.StatusBadRequest, "InvalidParameterValue", "TILECOL", "TILECOL must be a non-negative integer")
+		return
+	}
+	width := int64(1) << z
+	if int64(row) >= width {
+		s.writeOWSException(w, http.StatusBadRequest, "TileOutOfRange", "TILEROW", "TILEROW is outside the tile matrix")
+		return
+	}
+	if int64(column) >= width {
+		s.writeOWSException(w, http.StatusBadRequest, "TileOutOfRange", "TILECOL", "TILECOL is outside the tile matrix")
+		return
+	}
+	limits := webMercatorTileLimits(meta.Bounds, z)
+	if row < limits.minRow || row > limits.maxRow {
+		s.writeOWSException(w, http.StatusBadRequest, "TileOutOfRange", "TILEROW", "TILEROW is outside the layer limits")
+		return
+	}
+	if column < limits.minCol || column > limits.maxCol {
+		s.writeOWSException(w, http.StatusBadRequest, "TileOutOfRange", "TILECOL", "TILECOL is outside the layer limits")
+		return
+	}
+	s.serveWMTSTile(w, r, store, z, column, row)
+}
+
+func (s *Server) serveWMTSTile(w http.ResponseWriter, r *http.Request, store *mbtiles.Store, z, x, y int) {
+	if s.cfg.Observability.Metrics {
+		s.metrics.tileRequests.Add(1)
+	}
+	value, loadErr := s.cachedTile(r, store, z, x, y)
+	if loadErr != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		if s.cfg.Observability.Metrics {
+			s.metrics.databaseErrors.Add(1)
+		}
+		s.logger.Error("load WMTS tile", "source", store.ID(), "z", z, "x", x, "y", y, "error", loadErr)
+		s.writeOWSException(w, http.StatusInternalServerError, "NoApplicableCode", "", "failed to load tile")
+		return
+	}
+	if value.NotFound {
+		if s.cfg.Observability.Metrics {
+			s.metrics.tileNotFound.Add(1)
+		}
+		s.writeOWSException(w, http.StatusInternalServerError, "NoApplicableCode", "", "tile is not available")
+		return
+	}
+	name := strconv.Itoa(y) + "." + store.Metadata().Extension
+	serveCachedResponse(w, r, name, store.ModTime(), s.tileCacheControl, value)
 }
 
 func queryValue(values map[string][]string, name string) string {
@@ -44,6 +194,30 @@ func queryValue(values map[string][]string, name string) string {
 		}
 	}
 	return ""
+}
+
+func webMercatorTileLimits(bounds [4]float64, z int) wmtsMatrixLimits {
+	size := math.Ldexp(1, z)
+	west := (bounds[0] + 180) / 360 * size
+	east := (bounds[2] + 180) / 360 * size
+	north := webMercatorTileRow(bounds[3], size)
+	south := webMercatorTileRow(bounds[1], size)
+	minCol, maxCol := tileIndexRange(west, east, int(size))
+	minRow, maxRow := tileIndexRange(north, south, int(size))
+	return wmtsMatrixLimits{minRow: minRow, maxRow: maxRow, minCol: minCol, maxCol: maxCol}
+}
+
+func webMercatorTileRow(latitude, size float64) float64 {
+	const mercatorLatitudeLimit = 85.0511287798066
+	latitude = min(max(latitude, -mercatorLatitudeLimit), mercatorLatitudeLimit)
+	radians := latitude * math.Pi / 180
+	return (1 - math.Asinh(math.Tan(radians))/math.Pi) / 2 * size
+}
+
+func tileIndexRange(start, end float64, size int) (int, int) {
+	minimum := min(max(int(math.Floor(start)), 0), size-1)
+	maximum := max(min(max(int(math.Ceil(end))-1, 0), size-1), minimum)
+	return minimum, maximum
 }
 
 func (s *Server) serveSourceWMTS(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +272,22 @@ func (s *Server) buildWMTSCapabilities(baseURL string, ids []string) staticRespo
 		body.WriteString(strconv.FormatFloat(meta.Bounds[3], 'f', -1, 64))
 		body.WriteString(`</ows:UpperCorner></ows:WGS84BoundingBox><Style isDefault="true"><ows:Identifier>default</ows:Identifier></Style><Format>`)
 		writeXMLText(&body, meta.ContentType)
-		body.WriteString(`</Format><TileMatrixSetLink><TileMatrixSet>WebMercatorQuad</TileMatrixSet></TileMatrixSetLink><ResourceURL format="`)
+		body.WriteString(`</Format><TileMatrixSetLink><TileMatrixSet>WebMercatorQuad</TileMatrixSet><TileMatrixSetLimits>`)
+		for z := meta.MinZoom; z <= meta.MaxZoom; z++ {
+			limits := webMercatorTileLimits(meta.Bounds, z)
+			body.WriteString(`<TileMatrixLimits><TileMatrix>`)
+			body.WriteString(strconv.Itoa(z))
+			body.WriteString(`</TileMatrix><MinTileRow>`)
+			body.WriteString(strconv.Itoa(limits.minRow))
+			body.WriteString(`</MinTileRow><MaxTileRow>`)
+			body.WriteString(strconv.Itoa(limits.maxRow))
+			body.WriteString(`</MaxTileRow><MinTileCol>`)
+			body.WriteString(strconv.Itoa(limits.minCol))
+			body.WriteString(`</MinTileCol><MaxTileCol>`)
+			body.WriteString(strconv.Itoa(limits.maxCol))
+			body.WriteString(`</MaxTileCol></TileMatrixLimits>`)
+		}
+		body.WriteString(`</TileMatrixSetLimits></TileMatrixSetLink><ResourceURL format="`)
 		writeXMLText(&body, meta.ContentType)
 		body.WriteString(`" resourceType="tile" template="`)
 		writeXMLText(&body, baseURL+"/data/"+id+"/{TileMatrix}/{TileCol}/{TileRow}."+meta.Extension)
@@ -128,9 +317,13 @@ func (s *Server) writeOWSException(w http.ResponseWriter, status int, code, loca
 	var body bytes.Buffer
 	body.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1" version="1.0.0"><ows:Exception exceptionCode="`)
 	writeXMLText(&body, code)
-	body.WriteString(`" locator="`)
-	writeXMLText(&body, locator)
-	body.WriteString(`"><ows:ExceptionText>`)
+	body.WriteByte('"')
+	if locator != "" {
+		body.WriteString(` locator="`)
+		writeXMLText(&body, locator)
+		body.WriteByte('"')
+	}
+	body.WriteString(`><ows:ExceptionText>`)
 	writeXMLText(&body, message)
 	body.WriteString(`</ows:ExceptionText></ows:Exception></ows:ExceptionReport>`)
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")

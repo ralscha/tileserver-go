@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -135,6 +136,12 @@ func Load(path string) (Config, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return Config{}, errors.New("decode config: configuration must contain exactly one JSON object")
+		}
+		return Config{}, fmt.Errorf("decode config: trailing data: %w", err)
+	}
 	if cfg.Sources == nil {
 		cfg.Sources = make(map[string]Source)
 	}
@@ -154,6 +161,9 @@ func (c *Config) Normalize(root string) error {
 		return err
 	}
 	c.BasePath = normalizeBasePath(c.BasePath)
+	if err := validateBasePath(c.BasePath); err != nil {
+		return err
+	}
 	if c.PublicURL != "" {
 		u, parseErr := url.Parse(c.PublicURL)
 		if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -213,9 +223,24 @@ func normalizeBasePath(value string) string {
 	return "/" + strings.Trim(value, "/")
 }
 
+func validateBasePath(value string) error {
+	if value == "" {
+		return nil
+	}
+	for segment := range strings.SplitSeq(strings.TrimPrefix(value, "/"), "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return errors.New("base_path must not contain empty, dot, or dot-dot segments")
+		}
+	}
+	return nil
+}
+
 func ValidateID(id string) error {
 	if id == "" || len(id) > 128 {
 		return errors.New("id must contain between 1 and 128 characters")
+	}
+	if id == "." || id == ".." {
+		return errors.New("id cannot be a dot or dot-dot path segment")
 	}
 	for _, r := range id {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {

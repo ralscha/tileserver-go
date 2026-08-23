@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,10 +105,10 @@ func TestOpenMapTilesHTTPCompatibility(t *testing.T) {
 	t.Run("WMTS REST and KVP", func(t *testing.T) {
 		capabilities := request(t, handler, http.MethodGet, "/wmts?SERVICE=WMTS&REQUEST=GetCapabilities", nil)
 		assertStatus(t, capabilities, http.StatusOK)
-		if body := string(readAll(t, capabilities.Body)); !strings.Contains(body, "openmaptiles") || !strings.Contains(body, "WebMercatorQuad") {
+		if body := string(readAll(t, capabilities.Body)); !strings.Contains(body, "openmaptiles") || !strings.Contains(body, "WebMercatorQuad") || !strings.Contains(body, "TileMatrixSetLimits") {
 			t.Fatalf("unexpected capabilities: %s", body)
 		}
-		kvp := request(t, handler, http.MethodGet, "/wmts?service=WMTS&request=GetTile&layer=openmaptiles&tilematrix=1&tilecol=1&tilerow=0", map[string]string{"Accept-Encoding": "identity"})
+		kvp := request(t, handler, http.MethodGet, wmtsTilePath(nil), map[string]string{"Accept-Encoding": "identity"})
 		assertStatus(t, kvp, http.StatusOK)
 		if body := readAll(t, kvp.Body); !bytes.Equal(body, tilePayload) {
 			t.Fatalf("unexpected KVP tile: %x", body)
@@ -172,6 +173,7 @@ func TestHostRestrictionAndBasePath(t *testing.T) {
 	tileServer := newTestServerWithConfig(t, []byte("tile"), func(cfg *config.Config) {
 		cfg.AllowedHosts = []string{"maps.example.test"}
 		cfg.BasePath = "/maps"
+		cfg.HTTP.MaxConcurrent = 1
 	})
 	handler := tileServer.Handler()
 
@@ -196,6 +198,158 @@ func TestHostRestrictionAndBasePath(t *testing.T) {
 	handler.ServeHTTP(badResponse, bad)
 	if badResponse.Code != http.StatusMisdirectedRequest {
 		t.Fatalf("disallowed host returned %d", badResponse.Code)
+	}
+
+	requestsBeforeWrongPath := tileServer.metrics.requests.Load()
+	wrongPath := httptest.NewRequest(http.MethodGet, "http://maps.example.test/outside", nil)
+	wrongPath.Host = "maps.example.test"
+	wrongPathResponse := httptest.NewRecorder()
+	handler.ServeHTTP(wrongPathResponse, wrongPath)
+	if wrongPathResponse.Code != http.StatusNotFound {
+		t.Fatalf("wrong base path returned %d", wrongPathResponse.Code)
+	}
+	if wrongPathResponse.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("wrong-base-path response bypassed security headers")
+	}
+	if tileServer.metrics.requests.Load() != requestsBeforeWrongPath+1 {
+		t.Fatal("wrong-base-path response bypassed observability")
+	}
+
+	wrongPathBadHost := httptest.NewRequest(http.MethodGet, "http://evil.example/outside", nil)
+	wrongPathBadHost.Host = "evil.example"
+	wrongPathBadHostResponse := httptest.NewRecorder()
+	handler.ServeHTTP(wrongPathBadHostResponse, wrongPathBadHost)
+	if wrongPathBadHostResponse.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("wrong base path bypassed host policy: status=%d", wrongPathBadHostResponse.Code)
+	}
+
+	tileServer.limit <- struct{}{}
+	busyWrongPath := httptest.NewRequest(http.MethodGet, "http://maps.example.test/outside", nil)
+	busyWrongPath.Host = "maps.example.test"
+	busyWrongPathResponse := httptest.NewRecorder()
+	handler.ServeHTTP(busyWrongPathResponse, busyWrongPath)
+	if busyWrongPathResponse.Code != http.StatusServiceUnavailable {
+		t.Fatalf("wrong base path bypassed concurrency limit: status=%d", busyWrongPathResponse.Code)
+	}
+	liveness := httptest.NewRequest(http.MethodGet, "http://maps.example.test/maps/healthz", nil)
+	liveness.Host = "maps.example.test"
+	livenessResponse := httptest.NewRecorder()
+	handler.ServeHTTP(livenessResponse, liveness)
+	<-tileServer.limit
+	if livenessResponse.Code != http.StatusOK {
+		t.Fatalf("base-path liveness did not bypass concurrency limit: status=%d", livenessResponse.Code)
+	}
+}
+
+func TestCORSHeadersAreCacheSafe(t *testing.T) {
+	t.Run("wildcard policy is static", func(t *testing.T) {
+		tileServer := newTestServer(t, []byte("tile"))
+		response := request(t, tileServer.Handler(), http.MethodGet, "/data/raster/0/0/0.png", nil)
+		assertStatus(t, response, http.StatusOK)
+		if origin := response.Header.Get("Access-Control-Allow-Origin"); origin != "*" {
+			t.Fatalf("wildcard response Access-Control-Allow-Origin = %q", origin)
+		}
+	})
+
+	t.Run("allowlist varies every response by origin", func(t *testing.T) {
+		tileServer := newTestServerWithConfig(t, []byte("tile"), func(cfg *config.Config) {
+			cfg.CORS.Origins = []string{"https://client.example"}
+			cfg.CORS.AllowCredentials = true
+		})
+		handler := tileServer.Handler()
+		for name, origin := range map[string]string{
+			"no origin":       "",
+			"rejected origin": "https://evil.example",
+		} {
+			t.Run(name, func(t *testing.T) {
+				headers := map[string]string{}
+				if origin != "" {
+					headers["Origin"] = origin
+				}
+				response := request(t, handler, http.MethodGet, "/data/raster/0/0/0.png", headers)
+				assertStatus(t, response, http.StatusOK)
+				if !headerContainsToken(response.Header, "Vary", "Origin") {
+					t.Fatalf("response Vary = %q, want Origin", response.Header.Values("Vary"))
+				}
+				if allowed := response.Header.Get("Access-Control-Allow-Origin"); allowed != "" {
+					t.Fatalf("response unexpectedly allowed origin %q", allowed)
+				}
+			})
+		}
+
+		allowed := request(t, handler, http.MethodGet, "/data/raster/0/0/0.png", map[string]string{"Origin": "https://client.example"})
+		assertStatus(t, allowed, http.StatusOK)
+		if origin := allowed.Header.Get("Access-Control-Allow-Origin"); origin != "https://client.example" {
+			t.Fatalf("allowed response origin = %q", origin)
+		}
+		if allowed.Header.Get("Access-Control-Allow-Credentials") != "true" || !headerContainsToken(allowed.Header, "Vary", "Origin") {
+			t.Fatalf("allowed response has incomplete CORS headers: %#v", allowed.Header)
+		}
+	})
+}
+
+func TestWMTSKVPValidationAndExceptions(t *testing.T) {
+	tileServer := newTestServer(t, []byte("tile"))
+	handler := tileServer.Handler()
+
+	for _, parameter := range []string{"SERVICE", "REQUEST", "VERSION", "LAYER", "STYLE", "FORMAT", "TILEMATRIXSET", "TILEMATRIX", "TILEROW", "TILECOL"} {
+		t.Run("missing "+parameter, func(t *testing.T) {
+			response := request(t, handler, http.MethodGet, wmtsTilePath(map[string]string{parameter: ""}), nil)
+			assertOWSException(t, response, http.StatusBadRequest, "MissingParameterValue", parameter)
+		})
+	}
+
+	for _, test := range []struct {
+		name      string
+		overrides map[string]string
+		code      string
+		locator   string
+	}{
+		{name: "service", overrides: map[string]string{"SERVICE": "WMS"}, code: "InvalidParameterValue", locator: "SERVICE"},
+		{name: "version", overrides: map[string]string{"VERSION": "2.0.0"}, code: "InvalidParameterValue", locator: "VERSION"},
+		{name: "layer", overrides: map[string]string{"LAYER": "missing"}, code: "InvalidParameterValue", locator: "LAYER"},
+		{name: "style", overrides: map[string]string{"STYLE": "night"}, code: "InvalidParameterValue", locator: "STYLE"},
+		{name: "format", overrides: map[string]string{"FORMAT": "image/png"}, code: "InvalidParameterValue", locator: "FORMAT"},
+		{name: "matrix set", overrides: map[string]string{"TILEMATRIXSET": "Other"}, code: "InvalidParameterValue", locator: "TILEMATRIXSET"},
+		{name: "matrix syntax", overrides: map[string]string{"TILEMATRIX": "WebMercatorQuad:1"}, code: "InvalidParameterValue", locator: "TILEMATRIX"},
+		{name: "matrix range", overrides: map[string]string{"TILEMATRIX": "15"}, code: "InvalidParameterValue", locator: "TILEMATRIX"},
+		{name: "row syntax", overrides: map[string]string{"TILEROW": "-1"}, code: "InvalidParameterValue", locator: "TILEROW"},
+		{name: "row range", overrides: map[string]string{"TILEROW": "2"}, code: "TileOutOfRange", locator: "TILEROW"},
+		{name: "column range", overrides: map[string]string{"TILECOL": "2"}, code: "TileOutOfRange", locator: "TILECOL"},
+	} {
+		t.Run("invalid "+test.name, func(t *testing.T) {
+			response := request(t, handler, http.MethodGet, wmtsTilePath(test.overrides), nil)
+			assertOWSException(t, response, http.StatusBadRequest, test.code, test.locator)
+		})
+	}
+
+	missingTile := request(t, handler, http.MethodGet, wmtsTilePath(map[string]string{"TILECOL": "0"}), nil)
+	assertOWSException(t, missingTile, http.StatusBadRequest, "TileOutOfRange", "TILECOL")
+
+	missingCapabilitiesService := request(t, handler, http.MethodGet, "/wmts?REQUEST=GetCapabilities", nil)
+	assertOWSException(t, missingCapabilitiesService, http.StatusBadRequest, "MissingParameterValue", "SERVICE")
+
+	unsupported := request(t, handler, http.MethodGet, "/wmts?SERVICE=WMTS&REQUEST=GetFeatureInfo", nil)
+	assertOWSException(t, unsupported, http.StatusNotImplemented, "OperationNotSupported", "GetFeatureInfo")
+}
+
+func TestWebMercatorTileLimits(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		bounds [4]float64
+		z      int
+		want   wmtsMatrixLimits
+	}{
+		{name: "world", bounds: [4]float64{-180, -90, 180, 90}, z: 0, want: wmtsMatrixLimits{minRow: 0, maxRow: 0, minCol: 0, maxCol: 0}},
+		{name: "regional", bounds: [4]float64{8.4, 47.3, 8.7, 47.5}, z: 1, want: wmtsMatrixLimits{minRow: 0, maxRow: 0, minCol: 1, maxCol: 1}},
+		{name: "western hemisphere", bounds: [4]float64{-180, -85, 0, 85}, z: 1, want: wmtsMatrixLimits{minRow: 0, maxRow: 1, minCol: 0, maxCol: 0}},
+		{name: "point", bounds: [4]float64{0, 0, 0, 0}, z: 1, want: wmtsMatrixLimits{minRow: 1, maxRow: 1, minCol: 1, maxCol: 1}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := webMercatorTileLimits(test.bounds, test.z); got != test.want {
+				t.Fatalf("webMercatorTileLimits() = %+v, want %+v", got, test.want)
+			}
+		})
 	}
 }
 
@@ -776,6 +930,59 @@ func assertStatus(t testingTB, response *http.Response, want int) {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("status %d, want %d; body=%s", response.StatusCode, want, body)
 	}
+}
+
+func wmtsTilePath(overrides map[string]string) string {
+	values := url.Values{
+		"SERVICE":       {wmtsService},
+		"REQUEST":       {"GetTile"},
+		"VERSION":       {wmtsVersion},
+		"LAYER":         {"openmaptiles"},
+		"STYLE":         {wmtsStyle},
+		"FORMAT":        {"application/vnd.mapbox-vector-tile"},
+		"TILEMATRIXSET": {wmtsMatrixSet},
+		"TILEMATRIX":    {"1"},
+		"TILEROW":       {"0"},
+		"TILECOL":       {"1"},
+	}
+	for name, value := range overrides {
+		if value == "" {
+			values.Del(name)
+		} else {
+			values.Set(name, value)
+		}
+	}
+	return "/wmts?" + values.Encode()
+}
+
+func assertOWSException(t testingTB, response *http.Response, status int, code, locator string) {
+	t.Helper()
+	assertStatus(t, response, status)
+	if contentType := response.Header.Get("Content-Type"); !strings.Contains(contentType, "application/xml") {
+		t.Fatalf("OWS exception Content-Type = %q", contentType)
+	}
+	body := string(readAll(t, response.Body))
+	if !strings.Contains(body, `exceptionCode="`+code+`"`) {
+		t.Fatalf("unexpected OWS exception: %s", body)
+	}
+	if locator == "" {
+		if strings.Contains(body, ` locator=`) {
+			t.Fatalf("OWS exception unexpectedly contains a locator: %s", body)
+		}
+	} else if !strings.Contains(body, `locator="`+locator+`"`) {
+		t.Fatalf("unexpected OWS exception locator: %s", body)
+	}
+}
+
+func headerContainsToken(header http.Header, name, token string) bool {
+	for _, value := range header.Values(name) {
+		for part := range strings.SplitSeq(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func decodeJSON(t testingTB, reader io.Reader, target any) {

@@ -120,6 +120,11 @@ internet access unless those dependencies are replaced with local files.
 | `/status.json` | Runtime source/cache/database status |
 | `/metrics` | Prometheus exposition |
 
+WMTS KVP `GetTile` requests follow the WMTS 1.0 parameter contract and require `SERVICE=WMTS`,
+`REQUEST=GetTile`, `VERSION=1.0.0`, `LAYER`, `STYLE=default`, `FORMAT`,
+`TILEMATRIXSET=WebMercatorQuad`, `TILEMATRIX`, `TILEROW`, and `TILECOL`. Invalid KVP requests
+return an OWS XML exception report.
+
 ## Configuration
 
 Run `tileserver --help` for flags. JSON configuration is useful for production and multiple explicitly named sources:
@@ -128,7 +133,9 @@ Run `tileserver --help` for flags. JSON configuration is useful for production a
 go run ./cmd/tileserver --config config.example.json
 ```
 
-Paths in a configuration file are relative to the configuration file's directory. Command-line values override the loaded configuration. A complete example is in [`config.example.json`](config.example.json).
+`data_dir` is relative to the configuration file's directory. Relative `sources.*.path` values are
+resolved beneath `data_dir`; absolute source paths are used unchanged. Command-line values override
+the loaded configuration. A complete example is in [`config.example.json`](config.example.json).
 
 For a public deployment, set both a canonical URL and allowed hosts:
 
@@ -192,9 +199,10 @@ Tests construct real MBTiles databases and exercise the HTTP compatibility surfa
 
 ## Continuous integration and releases
 
-GitHub Actions checks formatting and module consistency, runs the race-enabled test suite,
-`go vet`, golangci-lint, and govulncheck, builds a static binary and container image, and checks
-the binary metadata for every branch push and pull request.
+GitHub Actions checks formatting and module consistency, runs the race-enabled test suite on Linux
+and the regular test suite on macOS and Windows, runs `go vet`, golangci-lint, and govulncheck,
+builds a static binary and container image, and checks the binary metadata for every branch push
+and pull request.
 
 Pushing a semantic version tag such as `v1.0.0` or `v1.0.0-rc.1` first runs the complete verification
 workflow. GoReleaser then builds all archives, and the host archive is unpacked and exercised with a

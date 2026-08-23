@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -308,7 +309,7 @@ func (s *Store) loadMetadata(ctx context.Context) error {
 		meta.Bounds = [4]float64{-180, -85.0511287798066, 180, 85.0511287798066}
 	}
 	meta.Center, meta.HasCenter = parseNumbers3(raw["center"])
-	if meta.HasCenter && (meta.Center[0] < meta.Bounds[0] || meta.Center[0] > meta.Bounds[2] || meta.Center[1] < meta.Bounds[1] || meta.Center[1] > meta.Bounds[3] || meta.Center[2] < float64(meta.MinZoom) || meta.Center[2] > float64(meta.MaxZoom)) {
+	if meta.HasCenter && (meta.Center[0] < meta.Bounds[0] || meta.Center[0] > meta.Bounds[2] || meta.Center[1] < meta.Bounds[1] || meta.Center[1] > meta.Bounds[3] || meta.Center[2] < float64(meta.MinZoom) || meta.Center[2] > float64(meta.MaxZoom) || math.Trunc(meta.Center[2]) != meta.Center[2]) {
 		meta.HasCenter = false
 	}
 	if metadataJSON := raw["json"]; metadataJSON != "" {
@@ -321,6 +322,11 @@ func (s *Store) loadMetadata(ctx context.Context) error {
 	}
 	if extension == "pbf" && meta.VectorLayers == nil {
 		return errors.New("invalid vector MBTiles: json metadata with vector_layers is required")
+	}
+	if meta.VectorLayers != nil {
+		if err := validateVectorLayers(meta.VectorLayers, meta.MinZoom, meta.MaxZoom); err != nil {
+			return fmt.Errorf("invalid vector_layers metadata: %w", err)
+		}
 	}
 	s.meta = meta
 	return nil
@@ -354,7 +360,7 @@ func parseNumbers4(value string) ([4]float64, bool) {
 	}
 	for i := range result {
 		n, err := strconv.ParseFloat(strings.TrimSpace(parts[i]), 64)
-		if err != nil {
+		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 			return [4]float64{}, false
 		}
 		result[i] = n
@@ -373,12 +379,67 @@ func parseNumbers3(value string) ([3]float64, bool) {
 	}
 	for i := range result {
 		n, err := strconv.ParseFloat(strings.TrimSpace(parts[i]), 64)
-		if err != nil {
+		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 			return [3]float64{}, false
 		}
 		result[i] = n
 	}
 	return result, true
+}
+
+func validateVectorLayers(value any, tilesetMinZoom, tilesetMaxZoom int) error {
+	layers, ok := value.([]any)
+	if !ok {
+		return errors.New("must be an array")
+	}
+	for index, value := range layers {
+		layer, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("entry %d must be an object", index)
+		}
+		id, ok := layer["id"].(string)
+		if !ok || strings.TrimSpace(id) == "" {
+			return fmt.Errorf("entry %d must contain a non-empty string id", index)
+		}
+		fields, ok := layer["fields"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("entry %d must contain a fields object", index)
+		}
+		for name, description := range fields {
+			if _, ok := description.(string); !ok {
+				return fmt.Errorf("entry %d field %q must have a string description", index, name)
+			}
+		}
+		if description, exists := layer["description"]; exists {
+			if _, ok := description.(string); !ok {
+				return fmt.Errorf("entry %d description must be a string", index)
+			}
+		}
+		minZoom, hasMinZoom, err := vectorLayerZoom(layer, "minzoom", index, tilesetMinZoom, tilesetMaxZoom)
+		if err != nil {
+			return err
+		}
+		maxZoom, hasMaxZoom, err := vectorLayerZoom(layer, "maxzoom", index, tilesetMinZoom, tilesetMaxZoom)
+		if err != nil {
+			return err
+		}
+		if hasMinZoom && hasMaxZoom && minZoom > maxZoom {
+			return fmt.Errorf("entry %d minzoom cannot exceed maxzoom", index)
+		}
+	}
+	return nil
+}
+
+func vectorLayerZoom(layer map[string]any, name string, index, tilesetMinZoom, tilesetMaxZoom int) (int, bool, error) {
+	value, exists := layer[name]
+	if !exists {
+		return 0, false, nil
+	}
+	number, ok := value.(float64)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) || math.Trunc(number) != number || number < float64(tilesetMinZoom) || number > float64(tilesetMaxZoom) {
+		return 0, false, fmt.Errorf("entry %d %s must be an integer within the tileset zoom range", index, name)
+	}
+	return int(number), true, nil
 }
 
 func formatInfo(format string) (contentType, extension string) {

@@ -53,14 +53,7 @@ func (s *Server) serveTile(w http.ResponseWriter, r *http.Request, id, zText, xT
 		s.writeError(w, http.StatusNotFound, "tile not found")
 		return
 	}
-	// Raster MBTiles have only an identity representation. Restricting content
-	// encoding negotiation to vector tiles prevents byte-identical raster data
-	// from occupying both the gzip and identity cache keys.
-	wantsGzip := meta.Extension == "pbf" && acceptsGzipEncoding(r.Header.Get("Accept-Encoding"))
-	key := cache.NewTileKey(id, z, x, y, wantsGzip)
-	value, loadErr := s.cachedResponse(r, key, func(ctx context.Context) (cache.Value, error) {
-		return s.loadTile(ctx, store, z, x, y, wantsGzip)
-	})
+	value, loadErr := s.cachedTile(r, store, z, x, y)
 	if loadErr != nil {
 		if r.Context().Err() != nil {
 			return
@@ -80,6 +73,17 @@ func (s *Server) serveTile(w http.ResponseWriter, r *http.Request, id, zText, xT
 		return
 	}
 	serveCachedResponse(w, r, tileText, store.ModTime(), s.tileCacheControl, value)
+}
+
+func (s *Server) cachedTile(r *http.Request, store *mbtiles.Store, z, x, y int) (cache.Value, error) {
+	// Raster MBTiles have only an identity representation. Restricting content
+	// encoding negotiation to vector tiles prevents byte-identical raster data
+	// from occupying both the gzip and identity cache keys.
+	wantsGzip := store.Metadata().Extension == "pbf" && acceptsGzipEncoding(r.Header.Get("Accept-Encoding"))
+	key := cache.NewTileKey(store.ID(), z, x, y, wantsGzip)
+	return s.cachedResponse(r, key, func(ctx context.Context) (cache.Value, error) {
+		return s.loadTile(ctx, store, z, x, y, wantsGzip)
+	})
 }
 
 func (s *Server) serveGrid(w http.ResponseWriter, r *http.Request, store *mbtiles.Store, z, x, y int, name string) {

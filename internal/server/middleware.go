@@ -30,7 +30,7 @@ func (s *Server) concurrencyMiddleware(next http.Handler) http.Handler {
 		// Liveness must remain responsive when tile work has exhausted the
 		// request budget. Readiness remains limited so overloaded instances can
 		// be removed from service by an orchestrator.
-		if r.URL.Path == "/health" || r.URL.Path == "/healthz" {
+		if s.isLivenessPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -45,24 +45,41 @@ func (s *Server) concurrencyMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) isLivenessPath(path string) bool {
+	return path == s.cfg.BasePath+"/health" || path == s.cfg.BasePath+"/healthz"
+}
+
 func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "geolocation=(), camera=(), microphone=()")
 		origin := r.Header.Get("Origin")
-		if origin != "" && s.originAllowed(origin) {
-			if s.cors.allowAll {
-				w.Header().Set("Access-Control-Allow-Origin", "*")
-			} else {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Add("Vary", "Origin")
-			}
-			if s.cfg.CORS.AllowCredentials {
-				w.Header().Set("Access-Control-Allow-Credentials", "true")
-			}
+		if s.cors.allowAll {
+			// A wildcard CORS policy is a static response policy. Emit it even for
+			// non-CORS requests so an intermediary cannot cache a response without
+			// the header and later reuse it for a CORS request.
+			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Expose-Headers", "ETag, Last-Modified, Content-Length, Content-Encoding, Accept-Ranges")
+		} else {
+			// The response varies by Origin even when the current request has no
+			// Origin or has one that is not allowed.
+			w.Header().Add("Vary", "Origin")
+			if origin != "" && s.originAllowed(origin) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				if s.cfg.CORS.AllowCredentials {
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+				}
+				w.Header().Set("Access-Control-Expose-Headers", "ETag, Last-Modified, Content-Length, Content-Encoding, Accept-Ranges")
+			}
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) preflightMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
 		isPreflight := r.Method == http.MethodOptions && origin != "" && r.Header.Get("Access-Control-Request-Method") != ""
 		if isPreflight {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")

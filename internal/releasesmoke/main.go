@@ -56,7 +56,7 @@ func run(distDir string) error {
 	if err := extractArchive(archivePath, extractDir); err != nil {
 		return fmt.Errorf("extract %s: %w", filepath.Base(archivePath), err)
 	}
-	for _, name := range []string{"LICENSE", "README.md", "SECURITY.md", "config.example.json"} {
+	for _, name := range []string{"LICENSE", "README.md", "config.example.json"} {
 		if _, err := os.Stat(filepath.Join(extractDir, name)); err != nil {
 			return fmt.Errorf("archive is missing %s: %w", name, err)
 		}

@@ -144,16 +144,17 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	var handler http.Handler = mux
+	handler = s.preflightMiddleware(handler)
+	if s.cfg.BasePath != "" {
+		handler = s.basePathMiddleware(handler)
+	}
 	handler = s.recoverMiddleware(handler)
-	handler = s.securityMiddleware(handler)
 	handler = s.concurrencyMiddleware(handler)
 	handler = s.hostMiddleware(handler)
 	if s.cfg.Observability.Metrics || s.cfg.Observability.AccessLog {
 		handler = s.observabilityMiddleware(handler)
 	}
-	if s.cfg.BasePath != "" {
-		handler = s.basePathMiddleware(handler)
-	}
+	handler = s.securityMiddleware(handler)
 	return handler
 }
 

@@ -1,5 +1,8 @@
 version: 3
 
+vars:
+  RELEASE_TAG_PATTERN: '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
+
 tasks:
   default:
     desc: Show available tasks
@@ -128,35 +131,45 @@ tasks:
       or pass it explicitly with `task tag TAG=v1.0.0`.
     requires:
       vars: [TAG]
+    env:
+      TILESERVER_RELEASE_TAG: '{{.TAG}}'
     preconditions:
-      - sh: 'case "{{.TAG}}" in v*) exit 0 ;; *) exit 1 ;; esac'
-        msg: TAG must start with v, for example v1.0.0
-      - sh: 'if git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1; then exit 1; fi; exit 0'
+      - sh: '{{if regexMatch .RELEASE_TAG_PATTERN .TAG}}exit 0{{else}}exit 1{{end}}'
+        msg: TAG must be a semantic version, for example v1.0.0 or v1.0.0-rc.1
+      - sh: 'test -z "$(git status --porcelain)"'
+        msg: Working tree must be clean before creating a release tag
+      - sh: 'if git rev-parse -q --verify "refs/tags/$TILESERVER_RELEASE_TAG" >/dev/null 2>&1; then exit 1; fi; exit 0'
         msg: Tag already exists locally
     cmds:
-      - git tag {{.TAG}}
+      - git tag -- "$TILESERVER_RELEASE_TAG"
 
   push-tag:
     desc: Push an existing release tag to GitHub
     requires:
       vars: [TAG]
+    env:
+      TILESERVER_RELEASE_TAG: '{{.TAG}}'
     preconditions:
-      - sh: 'case "{{.TAG}}" in v*) exit 0 ;; *) exit 1 ;; esac'
-        msg: TAG must start with v, for example v1.0.0
-      - sh: 'if git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1; then exit 0; else exit 1; fi'
+      - sh: '{{if regexMatch .RELEASE_TAG_PATTERN .TAG}}exit 0{{else}}exit 1{{end}}'
+        msg: TAG must be a semantic version, for example v1.0.0 or v1.0.0-rc.1
+      - sh: 'if git rev-parse -q --verify "refs/tags/$TILESERVER_RELEASE_TAG" >/dev/null 2>&1; then exit 0; else exit 1; fi'
         msg: Tag does not exist locally. Run `task tag TAG=v1.0.0` first.
     cmds:
-      - git push origin {{.TAG}}
+      - git push origin "$TILESERVER_RELEASE_TAG"
 
   release-tag:
     desc: Create and push a release tag to GitHub
     requires:
       vars: [TAG]
+    env:
+      TILESERVER_RELEASE_TAG: '{{.TAG}}'
     preconditions:
-      - sh: 'case "{{.TAG}}" in v*) exit 0 ;; *) exit 1 ;; esac'
-        msg: TAG must start with v, for example v1.0.0
-      - sh: 'if git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1; then exit 1; fi; exit 0'
+      - sh: '{{if regexMatch .RELEASE_TAG_PATTERN .TAG}}exit 0{{else}}exit 1{{end}}'
+        msg: TAG must be a semantic version, for example v1.0.0 or v1.0.0-rc.1
+      - sh: 'test -z "$(git status --porcelain)"'
+        msg: Working tree must be clean before creating a release tag
+      - sh: 'if git rev-parse -q --verify "refs/tags/$TILESERVER_RELEASE_TAG" >/dev/null 2>&1; then exit 1; fi; exit 0'
         msg: Tag already exists locally
     cmds:
-      - git tag {{.TAG}}
-      - git push origin {{.TAG}}
+      - git tag -- "$TILESERVER_RELEASE_TAG"
+      - git push origin "$TILESERVER_RELEASE_TAG"
