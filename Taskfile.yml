@@ -1,0 +1,162 @@
+version: 3
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  format:
+    desc: Modernize and format Go code
+    cmds:
+      - go fix ./...
+      - go fmt ./...
+
+  build:
+    desc: Build the tileserver binary in dist
+    env:
+      CGO_ENABLED: '0'
+    cmds:
+      - go build -trimpath -o dist/ ./cmd/tileserver
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run all tests with the race detector
+    cmds:
+      - go test -race ./...
+
+  test:cover:
+    desc: Run all tests with coverage
+    cmds:
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out
+
+  bench:
+    desc: Benchmark cache, coalescing, and HTTP response paths
+    cmds:
+      - go test ./internal/cache ./internal/flight ./internal/server -run '^$' -bench . -benchmem
+
+  vet:
+    desc: Run Go static analysis
+    cmds:
+      - go vet ./...
+
+  vuln:
+    desc: Check reachable Go code for known vulnerabilities
+    cmds:
+      - go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
+  lint:
+    desc: Run golangci-lint in a Docker container
+    cmds:
+      - docker run --rm -v {{toSlash .ROOT_DIR}}:/app -w /app golangci/golangci-lint:v2.13.1 golangci-lint run -v --timeout 5m
+
+  verify:
+    desc: Run the complete local verification build
+    cmds:
+      - task: test:race
+      - task: vet
+      - task: vuln
+      - task: build
+
+  run:
+    desc: Run tileserver-go, passing arguments after --
+    cmds:
+      - go run ./cmd/tileserver {{.CLI_ARGS}}
+
+  example:
+    desc: Serve the standalone MapLibre example on port 3000
+    cmds:
+      - python -m http.server 3000 --directory ./examples/maplibre
+
+  docker:build:
+    desc: Build the tileserver-go container image
+    cmds:
+      - docker build -t tileserver-go:dev .
+
+  docker:up:
+    desc: Start the Docker Compose service
+    cmds:
+      - docker compose up --build
+
+  docker:down:
+    desc: Stop the Docker Compose service
+    cmds:
+      - docker compose down
+
+  release:check:
+    desc: Validate the GoReleaser configuration
+    cmds:
+      - goreleaser check
+
+  release:snapshot:
+    desc: Build local snapshot release archives with GoReleaser
+    cmds:
+      - goreleaser release --snapshot --clean
+
+  release:smoke:
+    desc: Build and exercise the packaged host release archive
+    deps:
+      - release:snapshot
+    cmds:
+      - go run ./internal/releasesmoke --dist dist
+
+  release:verify:
+    desc: Run all checks required before creating a release tag
+    cmds:
+      - task: verify
+      - task: lint
+      - task: release:check
+      - task: release:smoke
+
+  clean:
+    desc: Remove generated build and release artifacts
+    cmds:
+      - '{{if eq OS "windows"}}cmd /c "if exist dist rmdir /s /q dist"{{else}}rm -rf dist{{end}}'
+      - go clean -testcache
+
+  tag:
+    desc: Create a local release tag
+    summary: |
+      Create a local git tag.
+
+      Run with `task --interactive tag` to be prompted for TAG,
+      or pass it explicitly with `task tag TAG=v1.0.0`.
+    requires:
+      vars: [TAG]
+    preconditions:
+      - sh: 'case "{{.TAG}}" in v*) exit 0 ;; *) exit 1 ;; esac'
+        msg: TAG must start with v, for example v1.0.0
+      - sh: 'if git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1; then exit 1; fi; exit 0'
+        msg: Tag already exists locally
+    cmds:
+      - git tag {{.TAG}}
+
+  push-tag:
+    desc: Push an existing release tag to GitHub
+    requires:
+      vars: [TAG]
+    preconditions:
+      - sh: 'case "{{.TAG}}" in v*) exit 0 ;; *) exit 1 ;; esac'
+        msg: TAG must start with v, for example v1.0.0
+      - sh: 'if git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1; then exit 0; else exit 1; fi'
+        msg: Tag does not exist locally. Run `task tag TAG=v1.0.0` first.
+    cmds:
+      - git push origin {{.TAG}}
+
+  release-tag:
+    desc: Create and push a release tag to GitHub
+    requires:
+      vars: [TAG]
+    preconditions:
+      - sh: 'case "{{.TAG}}" in v*) exit 0 ;; *) exit 1 ;; esac'
+        msg: TAG must start with v, for example v1.0.0
+      - sh: 'if git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1; then exit 1; fi; exit 0'
+        msg: Tag already exists locally
+    cmds:
+      - git tag {{.TAG}}
+      - git push origin {{.TAG}}

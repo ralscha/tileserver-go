@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tileserver-go · MapLibre example</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.5.0/dist/maplibre-gl.css">
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    aside {
+      position: absolute;
+      z-index: 2;
+      top: 10px;
+      left: 10px;
+      padding: 0.45rem 0.7rem;
+      color: #111;
+      font: 14px system-ui, sans-serif;
+      background: #fff;
+      border-radius: 4px;
+      box-shadow: 0 1px 5px #0005;
+    }
+    aside a { color: #056eb5; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <aside><span id="example-name">MapLibre example</span> · <a id="tilejson-link">TileJSON</a></aside>
+  <script type="module">
+    import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.5.0/dist/maplibre-gl.mjs';
+
+    const parameters = new URLSearchParams(window.location.search);
+    const server = (parameters.get('server') || 'http://localhost:8080').replace(/\/+$/, '');
+    const examples = {
+      liechtenstein: {
+        style: './liechtenstein.json',
+        source: 'osm-2020-02-10-v3.11_europe_liechtenstein',
+      },
+      minimal: {
+        style: './openmaptiles-minimal.json',
+        source: 'openmaptiles',
+      },
+    };
+    const example = examples[parameters.get('style')] || examples.liechtenstein;
+    const sourceID = parameters.get('source') || example.source;
+    const tileJSONURL = `${server}/data/${encodeURIComponent(sourceID)}.json`;
+    const style = await fetch(example.style).then((response) => {
+      if (!response.ok) throw new Error(`Could not load example style: ${response.status}`);
+      return response.json();
+    });
+    const [styleSource] = Object.keys(style.sources);
+    style.sources[styleSource].url = tileJSONURL;
+
+    document.querySelector('#example-name').textContent = style.name;
+    document.querySelector('#tilejson-link').href = tileJSONURL;
+
+    const map = new maplibregl.Map({
+      container: 'map',
+      style,
+      hash: true,
+      attributionControl: true,
+    });
+    map.addControl(new maplibregl.NavigationControl());
+    map.addControl(new maplibregl.FullscreenControl());
+    map.addControl(new maplibregl.ScaleControl({unit: 'metric'}));
+    map.on('error', (event) => console.error('MapLibre error:', event.error));
+  </script>
+</body>
+</html>

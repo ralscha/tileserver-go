@@ -1,0 +1,15 @@
+/tileserver
+/tileserver.exe
+/dist/
+/data/
+/styles/
+/fonts/
+/sprites/
+/files/
+*.mbtiles
+*.db-shm
+*.db-wal
+coverage.out
+*.prof
+*.mbtiles
+*.exe

@@ -1,0 +1,12 @@
+.git
+.github
+.idea
+.vscode
+data
+fonts
+sprites
+files
+dist
+*.mbtiles
+tileserver
+tileserver.exe

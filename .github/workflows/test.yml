@@ -1,0 +1,56 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Check module files
+        run: go mod tidy -diff
+
+      - name: Run tests with race detector
+        run: go test -race ./...
+
+      - name: Run Go static analysis
+        run: go vet ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@db9de0fc1a667e1a49d2291a1a042dff081d78f6 # v9
+        with:
+          version: v2.13.1
+          args: --timeout=5m
+
+      - name: Check for known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
+      - name: Build static binary
+        run: CGO_ENABLED=0 go build -trimpath -o dist/tileserver ./cmd/tileserver
+
+      - name: Smoke-test binary metadata
+        run: ./dist/tileserver --version
+
+      - name: Build container image
+        run: docker build --tag tileserver-go:ci .

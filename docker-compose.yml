@@ -1,0 +1,18 @@
+services:
+  tileserver:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data:ro
+    command:
+      - --listen=:8080
+      - --data=/data
+      - --allowed-hosts=localhost,127.0.0.1
+      - --access-log=false
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
