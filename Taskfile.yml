@@ -71,7 +71,7 @@ tasks:
   example:
     desc: Serve the standalone MapLibre example on port 3000
     cmds:
-      - python -m http.server 3000 --directory ./examples/maplibre
+      - go run ./cmd/exampleserver
 
   docker:build:
     desc: Build the tileserver-go container image

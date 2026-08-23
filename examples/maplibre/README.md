@@ -11,7 +11,7 @@ go run ./cmd/tileserver -- ./osm-2020-02-10-v3.11_europe_liechtenstein.mbtiles
 In another terminal, serve this directory:
 
 ```powershell
-python -m http.server 3000 --directory ./examples/maplibre
+go run ./cmd/exampleserver
 ```
 
 Open <http://localhost:3000>. The example defaults to `http://localhost:8080` and the included Liechtenstein style. The server URL, source ID, and example style can be changed with query parameters:

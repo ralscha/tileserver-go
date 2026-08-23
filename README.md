@@ -94,7 +94,7 @@ go run ./cmd/tileserver -- ./osm-2020-02-10-v3.11_europe_liechtenstein.mbtiles
 In another terminal, serve the standalone consumer:
 
 ```powershell
-python -m http.server 3000 --directory ./examples/maplibre
+go run ./cmd/exampleserver
 ```
 
 Then open <http://localhost:3000>. tileserver-go serves only the vector tiles and TileJSON. The
