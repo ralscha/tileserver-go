@@ -190,7 +190,7 @@ func extractTarGz(archivePath, destination string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 				return err
 			}
-			if err := writeExtractedFile(target, os.FileMode(header.Mode), tape); err != nil {
+			if err := writeExtractedFile(target, os.FileMode(header.Mode&0o777), tape); err != nil {
 				return err
 			}
 		default:
@@ -322,7 +322,10 @@ func exerciseServer(binaryPath, fixturePath string) error {
 		if readErr != nil || closeErr != nil || response.StatusCode != http.StatusOK || !strings.Contains(response.Header.Get("Content-Type"), check.contentType) || !bytes.Contains(body, []byte(check.body)) {
 			_ = stop(true)
 			<-wait
-			return fmt.Errorf("GET %s failed: status=%d content-type=%q body=%q read=%v close=%v\n%s", check.path, response.StatusCode, response.Header.Get("Content-Type"), body, readErr, closeErr, logs.String())
+			if responseErr := errors.Join(readErr, closeErr); responseErr != nil {
+				return fmt.Errorf("GET %s failed: status=%d content-type=%q body=%q: %w\n%s", check.path, response.StatusCode, response.Header.Get("Content-Type"), body, responseErr, logs.String())
+			}
+			return fmt.Errorf("GET %s failed: status=%d content-type=%q body=%q\n%s", check.path, response.StatusCode, response.Header.Get("Content-Type"), body, logs.String())
 		}
 	}
 
