@@ -80,8 +80,24 @@ func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 func (s *Server) preflightMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		isPreflight := r.Method == http.MethodOptions && origin != "" && r.Header.Get("Access-Control-Request-Method") != ""
+		requestedMethod := r.Header.Get("Access-Control-Request-Method")
+		isPreflight := r.Method == http.MethodOptions && origin != "" && requestedMethod != ""
 		if isPreflight {
+			w.Header().Add("Vary", "Access-Control-Request-Method")
+			w.Header().Add("Vary", "Access-Control-Request-Headers")
+			if !s.originAllowed(origin) {
+				s.writeError(w, http.StatusForbidden, "CORS origin is not allowed")
+				return
+			}
+			if requestedMethod != http.MethodGet && requestedMethod != http.MethodHead {
+				w.Header().Set("Allow", "GET, HEAD, OPTIONS")
+				s.writeError(w, http.StatusMethodNotAllowed, "CORS method is not allowed")
+				return
+			}
+			if !corsRequestHeadersAllowed(r.Header.Get("Access-Control-Request-Headers")) {
+				s.writeError(w, http.StatusBadRequest, "CORS request header is not allowed")
+				return
+			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Accept, Accept-Encoding, Range, If-None-Match, If-Modified-Since")
 			w.Header().Set("Access-Control-Max-Age", "86400")
@@ -90,6 +106,17 @@ func (s *Server) preflightMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func corsRequestHeadersAllowed(value string) bool {
+	for entry := range strings.SplitSeq(value, ",") {
+		switch strings.ToLower(strings.TrimSpace(entry)) {
+		case "", "accept", "accept-encoding", "range", "if-none-match", "if-modified-since":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) originAllowed(origin string) bool {

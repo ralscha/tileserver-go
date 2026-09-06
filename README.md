@@ -148,6 +148,10 @@ For a public deployment, set both a canonical URL and allowed hosts:
 
 Only enable `trust_proxy` when the server is behind a trusted reverse proxy that overwrites `X-Forwarded-Host` and `X-Forwarded-Proto`.
 
+CORS preflights are accepted only for configured origins, `GET` or `HEAD`, and the request headers
+advertised by the server. The corresponding JSON settings can also be overridden with
+`--cors-origins` and `--cors-credentials`.
+
 ## Docker
 
 ```sh

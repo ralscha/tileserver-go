@@ -268,7 +268,7 @@ func TestCORSHeadersAreCacheSafe(t *testing.T) {
 				}
 				response := request(t, handler, http.MethodGet, "/data/raster/0/0/0.png", headers)
 				assertStatus(t, response, http.StatusOK)
-				if !headerContainsToken(response.Header, "Vary", "Origin") {
+				if !varyContains(response.Header, "Origin") {
 					t.Fatalf("response Vary = %q, want Origin", response.Header.Values("Vary"))
 				}
 				if allowed := response.Header.Get("Access-Control-Allow-Origin"); allowed != "" {
@@ -282,7 +282,7 @@ func TestCORSHeadersAreCacheSafe(t *testing.T) {
 		if origin := allowed.Header.Get("Access-Control-Allow-Origin"); origin != "https://client.example" {
 			t.Fatalf("allowed response origin = %q", origin)
 		}
-		if allowed.Header.Get("Access-Control-Allow-Credentials") != "true" || !headerContainsToken(allowed.Header, "Vary", "Origin") {
+		if allowed.Header.Get("Access-Control-Allow-Credentials") != "true" || !varyContains(allowed.Header, "Origin") {
 			t.Fatalf("allowed response has incomplete CORS headers: %#v", allowed.Header)
 		}
 	})
@@ -330,7 +330,7 @@ func TestWMTSKVPValidationAndExceptions(t *testing.T) {
 	assertOWSException(t, missingCapabilitiesService, http.StatusBadRequest, "MissingParameterValue", "SERVICE")
 
 	unsupported := request(t, handler, http.MethodGet, "/wmts?SERVICE=WMTS&REQUEST=GetFeatureInfo", nil)
-	assertOWSException(t, unsupported, http.StatusNotImplemented, "OperationNotSupported", "GetFeatureInfo")
+	assertOWSException(t, unsupported, http.StatusNotImplemented, "OperationNotSupported", "REQUEST")
 }
 
 func TestWebMercatorTileLimits(t *testing.T) {
@@ -375,6 +375,32 @@ func TestRasterTileUsesOneCacheEntryForAllAcceptEncodings(t *testing.T) {
 	}
 	if afterSecond.Hits != afterFirst.Hits+1 {
 		t.Fatalf("identity request did not reuse the raster cache entry: first=%+v second=%+v", afterFirst, afterSecond)
+	}
+}
+
+func TestContentEncodingNegotiation(t *testing.T) {
+	tileServer := newTestServer(t, []byte("tile"))
+	handler := tileServer.Handler()
+
+	identityPreferred := request(t, handler, http.MethodGet, "/data/openmaptiles/1/1/0.pbf", map[string]string{
+		"Accept-Encoding": "gzip;q=0.5, identity;q=1",
+	})
+	assertStatus(t, identityPreferred, http.StatusOK)
+	if encoding := identityPreferred.Header.Get("Content-Encoding"); encoding != "" {
+		t.Fatalf("identity-preferred response has content encoding %q", encoding)
+	}
+
+	for name, path := range map[string]string{
+		"vector tile": "/data/openmaptiles/1/1/0.pbf",
+		"raster tile": "/data/raster/0/0/0.png",
+		"UTFGrid":     "/data/openmaptiles/1/1/0.grid.json",
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := request(t, handler, http.MethodGet, path, map[string]string{
+				"Accept-Encoding": "gzip;q=0, identity;q=0",
+			})
+			assertStatus(t, response, http.StatusNotAcceptable)
+		})
 	}
 }
 
@@ -628,9 +654,26 @@ func TestProtocolHelpers(t *testing.T) {
 	if !accepted {
 		t.Fatal("allocation test did not negotiate gzip")
 	}
+	for _, test := range []struct {
+		header string
+		want   bool
+	}{
+		{"", true},
+		{"gzip", true},
+		{"identity;q=0", false},
+		{"*;q=0", false},
+		{"*;q=0, identity;q=0.5", true},
+	} {
+		if got := acceptsIdentityEncoding(test.header); got != test.want {
+			t.Errorf("acceptsIdentityEncoding(%q) = %v, want %v", test.header, got, test.want)
+		}
+	}
 }
+
 func TestOptionsRequiresCORSPreflightHeaders(t *testing.T) {
-	tileServer := newTestServer(t, []byte("tile"))
+	tileServer := newTestServerWithConfig(t, []byte("tile"), func(cfg *config.Config) {
+		cfg.CORS.Origins = []string{"https://client.example"}
+	})
 	handler := tileServer.Handler()
 
 	plain := request(t, handler, http.MethodOptions, "/health", nil)
@@ -638,10 +681,33 @@ func TestOptionsRequiresCORSPreflightHeaders(t *testing.T) {
 		t.Fatalf("plain OPTIONS status = %d, want %d", plain.StatusCode, http.StatusMethodNotAllowed)
 	}
 	preflight := request(t, handler, http.MethodOptions, "/health", map[string]string{
-		"Origin":                        "https://client.example",
-		"Access-Control-Request-Method": http.MethodGet,
+		"Origin":                         "https://client.example",
+		"Access-Control-Request-Method":  http.MethodGet,
+		"Access-Control-Request-Headers": "Range, If-None-Match",
 	})
 	assertStatus(t, preflight, http.StatusNoContent)
+	if !varyContains(preflight.Header, "Origin") || !varyContains(preflight.Header, "Access-Control-Request-Method") || !varyContains(preflight.Header, "Access-Control-Request-Headers") {
+		t.Fatalf("preflight response has incomplete Vary headers: %#v", preflight.Header.Values("Vary"))
+	}
+
+	for name, headers := range map[string]map[string]string{
+		"origin": {
+			"Origin": "https://evil.example", "Access-Control-Request-Method": http.MethodGet,
+		},
+		"method": {
+			"Origin": "https://client.example", "Access-Control-Request-Method": http.MethodPost,
+		},
+		"header": {
+			"Origin": "https://client.example", "Access-Control-Request-Method": http.MethodGet, "Access-Control-Request-Headers": "Authorization",
+		},
+	} {
+		t.Run("reject "+name, func(t *testing.T) {
+			response := request(t, handler, http.MethodOptions, "/health", headers)
+			if response.StatusCode < 400 {
+				t.Fatalf("preflight status = %d, want rejection", response.StatusCode)
+			}
+		})
+	}
 }
 
 func BenchmarkCachedTileHTTP(b *testing.B) {
@@ -974,8 +1040,8 @@ func assertOWSException(t testingTB, response *http.Response, status int, code, 
 	}
 }
 
-func headerContainsToken(header http.Header, name, token string) bool {
-	for _, value := range header.Values(name) {
+func varyContains(header http.Header, token string) bool {
+	for _, value := range header.Values("Vary") {
 		for part := range strings.SplitSeq(value, ",") {
 			if strings.EqualFold(strings.TrimSpace(part), token) {
 				return true

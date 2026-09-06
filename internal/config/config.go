@@ -188,6 +188,8 @@ func (c *Config) Normalize(root string) error {
 }
 
 func (c *Config) Validate() error {
+	c.AllowedHosts = normalizeStringList(c.AllowedHosts)
+	c.CORS.Origins = normalizeStringList(c.CORS.Origins)
 	if c.Listen == "" {
 		return errors.New("listen address cannot be empty")
 	}
@@ -206,13 +208,53 @@ func (c *Config) Validate() error {
 	if len(c.AllowedHosts) == 0 {
 		return errors.New("allowed_hosts must contain at least one host or wildcard")
 	}
+	for _, host := range c.AllowedHosts {
+		if !validAllowedHost(host) {
+			return fmt.Errorf("allowed_hosts entry %q is invalid", host)
+		}
+	}
 	if len(c.CORS.Origins) == 0 {
 		c.CORS.Origins = []string{"*"}
 	}
 	if c.CORS.AllowCredentials && slices.Contains(c.CORS.Origins, "*") {
 		return errors.New("cors.allow_credentials cannot be combined with wildcard origin")
 	}
+	for _, origin := range c.CORS.Origins {
+		if origin == "*" || origin == "null" {
+			continue
+		}
+		u, err := url.Parse(origin)
+		if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("cors.origins entry %q must be an origin without credentials, path, query, or fragment", origin)
+		}
+	}
 	return nil
+}
+
+func validAllowedHost(value string) bool {
+	if value == "*" {
+		return true
+	}
+	if strings.ContainsAny(value, "/\\@?#") || strings.ContainsFunc(value, func(r rune) bool { return r <= ' ' }) {
+		return false
+	}
+	if !strings.Contains(value, "*") {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(value, "*.")
+	return ok && suffix != "" && !strings.ContainsAny(suffix, "*:[]") && !strings.Contains(suffix, "..") && !strings.HasSuffix(suffix, ".")
+}
+
+func normalizeStringList(values []string) []string {
+	result := values[:0]
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || slices.Contains(result, value) {
+			continue
+		}
+		result = append(result, value)
+	}
+	return result
 }
 
 func normalizeBasePath(value string) string {

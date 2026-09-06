@@ -55,7 +55,7 @@ func (s *Server) serveWMTS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request != "gettile" {
-		s.writeOWSException(w, http.StatusNotImplemented, "OperationNotSupported", requestValue, "unsupported WMTS request")
+		s.writeOWSException(w, http.StatusNotImplemented, "OperationNotSupported", "REQUEST", "unsupported WMTS request")
 		return
 	}
 	version := queryValue(query, "VERSION")
@@ -164,7 +164,8 @@ func (s *Server) serveWMTSTile(w http.ResponseWriter, r *http.Request, store *mb
 	if s.cfg.Observability.Metrics {
 		s.metrics.tileRequests.Add(1)
 	}
-	value, loadErr := s.cachedTile(r, store, z, x, y)
+	encodings := parseEncodingPreferences(r.Header.Get("Accept-Encoding"))
+	value, loadErr := s.cachedTile(r, store, z, x, y, encodings.prefersGzip())
 	if loadErr != nil {
 		if r.Context().Err() != nil {
 			return
@@ -181,6 +182,10 @@ func (s *Server) serveWMTSTile(w http.ResponseWriter, r *http.Request, store *mb
 			s.metrics.tileNotFound.Add(1)
 		}
 		s.writeOWSException(w, http.StatusInternalServerError, "NoApplicableCode", "", "tile is not available")
+		return
+	}
+	if !encodings.accepts(value.ContentEncoding) {
+		s.writeOWSException(w, http.StatusNotAcceptable, "NoApplicableCode", "", "no acceptable content encoding is available")
 		return
 	}
 	name := strconv.Itoa(y) + "." + store.Metadata().Extension

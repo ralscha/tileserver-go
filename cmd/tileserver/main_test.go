@@ -23,6 +23,8 @@ func TestFindConfigPath(t *testing.T) {
 		{name: "short separate", args: []string{"-config", "custom.json"}, want: "custom.json"},
 		{name: "long equals", args: []string{"--config=custom.json"}, want: "custom.json"},
 		{name: "short equals", args: []string{"-config=custom.json"}, want: "custom.json"},
+		{name: "last occurrence wins", args: []string{"--config", "first.json", "--config=second.json"}, want: "second.json"},
+		{name: "argument delimiter", args: []string{"--", "--config=source.mbtiles"}},
 		{name: "missing", args: []string{"--config"}, wantErr: "flag needs an argument"},
 		{name: "next option", args: []string{"--config", "--listen", ":9090"}, wantErr: "flag needs an argument"},
 	}

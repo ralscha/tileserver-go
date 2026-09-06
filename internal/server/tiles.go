@@ -53,7 +53,8 @@ func (s *Server) serveTile(w http.ResponseWriter, r *http.Request, id, zText, xT
 		s.writeError(w, http.StatusNotFound, "tile not found")
 		return
 	}
-	value, loadErr := s.cachedTile(r, store, z, x, y)
+	encodings := parseEncodingPreferences(r.Header.Get("Accept-Encoding"))
+	value, loadErr := s.cachedTile(r, store, z, x, y, encodings.prefersGzip())
 	if loadErr != nil {
 		if r.Context().Err() != nil {
 			return
@@ -72,14 +73,18 @@ func (s *Server) serveTile(w http.ResponseWriter, r *http.Request, id, zText, xT
 		s.writeError(w, http.StatusNotFound, "tile not found")
 		return
 	}
+	if !encodings.accepts(value.ContentEncoding) {
+		s.writeError(w, http.StatusNotAcceptable, "no acceptable content encoding is available")
+		return
+	}
 	serveCachedResponse(w, r, tileText, store.ModTime(), s.tileCacheControl, value)
 }
 
-func (s *Server) cachedTile(r *http.Request, store *mbtiles.Store, z, x, y int) (cache.Value, error) {
+func (s *Server) cachedTile(r *http.Request, store *mbtiles.Store, z, x, y int, prefersGzip bool) (cache.Value, error) {
 	// Raster MBTiles have only an identity representation. Restricting content
 	// encoding negotiation to vector tiles prevents byte-identical raster data
 	// from occupying both the gzip and identity cache keys.
-	wantsGzip := store.Metadata().Extension == "pbf" && acceptsGzipEncoding(r.Header.Get("Accept-Encoding"))
+	wantsGzip := store.Metadata().Extension == "pbf" && prefersGzip
 	key := cache.NewTileKey(store.ID(), z, x, y, wantsGzip)
 	return s.cachedResponse(r, key, func(ctx context.Context) (cache.Value, error) {
 		return s.loadTile(ctx, store, z, x, y, wantsGzip)
@@ -96,7 +101,8 @@ func (s *Server) serveGrid(w http.ResponseWriter, r *http.Request, store *mbtile
 		s.writeError(w, http.StatusNotFound, "grid not found")
 		return
 	}
-	wantsGzip := acceptsGzipEncoding(r.Header.Get("Accept-Encoding"))
+	encodings := parseEncodingPreferences(r.Header.Get("Accept-Encoding"))
+	wantsGzip := encodings.prefersGzip()
 	key := cache.NewGridKey(store.ID(), z, x, y, wantsGzip)
 	value, loadErr := s.cachedResponse(r, key, func(ctx context.Context) (cache.Value, error) {
 		return s.loadGrid(ctx, store, z, x, y, wantsGzip)
@@ -117,6 +123,10 @@ func (s *Server) serveGrid(w http.ResponseWriter, r *http.Request, store *mbtile
 			s.metrics.tileNotFound.Add(1)
 		}
 		s.writeError(w, http.StatusNotFound, "grid not found")
+		return
+	}
+	if !encodings.accepts(value.ContentEncoding) {
+		s.writeError(w, http.StatusNotAcceptable, "no acceptable content encoding is available")
 		return
 	}
 	serveCachedResponse(w, r, name, store.ModTime(), s.tileCacheControl, value)
@@ -167,7 +177,6 @@ func (s *Server) loadGrid(ctx context.Context, store *mbtiles.Store, z, x, y int
 		return cache.Value{}, err
 	}
 	wasGzip := isGzip(data)
-	varyAcceptEncoding := wasGzip || gridData != nil
 	if gridData != nil {
 		if wasGzip {
 			data, err = expandGzip(data)
@@ -200,7 +209,7 @@ func (s *Server) loadGrid(ctx context.Context, store *mbtiles.Store, z, x, y int
 				return cache.Value{}, fmt.Errorf("decompress grid: %w", err)
 			}
 		}
-	} else if gridData != nil && wantsGzip {
+	} else if wantsGzip {
 		data, err = compressGzip(data)
 		if err != nil {
 			return cache.Value{}, fmt.Errorf("compress grid: %w", err)
@@ -217,7 +226,7 @@ func (s *Server) loadGrid(ctx context.Context, store *mbtiles.Store, z, x, y int
 		ETag:               etag,
 		ContentType:        "application/json; charset=utf-8",
 		ContentEncoding:    encoding,
-		VaryAcceptEncoding: varyAcceptEncoding,
+		VaryAcceptEncoding: true,
 	}, nil
 }
 
@@ -318,8 +327,55 @@ func compressGzip(data []byte) ([]byte, error) {
 }
 
 func acceptsGzipEncoding(header string) bool {
-	best := -1.0
-	wildcard := -1.0
+	return parseEncodingPreferences(header).acceptsGzip()
+}
+
+func acceptsIdentityEncoding(header string) bool {
+	return parseEncodingPreferences(header).acceptsIdentity()
+}
+
+type encodingPreferences struct {
+	gzip        float64
+	identity    float64
+	wildcard    float64
+	hasGzip     bool
+	hasIdentity bool
+	hasWildcard bool
+}
+
+func (p encodingPreferences) acceptsGzip() bool {
+	if p.hasGzip {
+		return p.gzip > 0
+	}
+	return p.hasWildcard && p.wildcard > 0
+}
+
+func (p encodingPreferences) acceptsIdentity() bool {
+	if p.hasIdentity {
+		return p.identity > 0
+	}
+	return !p.hasWildcard || p.wildcard > 0
+}
+
+func (p encodingPreferences) prefersGzip() bool {
+	gzipQuality := p.wildcard
+	if p.hasGzip {
+		gzipQuality = p.gzip
+	} else if !p.hasWildcard {
+		return false
+	}
+	return gzipQuality > 0 && (!p.hasIdentity || gzipQuality >= p.identity)
+}
+
+func (p encodingPreferences) accepts(encoding string) bool {
+	if encoding == "gzip" {
+		return p.acceptsGzip()
+	}
+	return p.acceptsIdentity()
+}
+
+func parseEncodingPreferences(header string) encodingPreferences {
+	var preferences encodingPreferences
 	for part := range strings.SplitSeq(header, ",") {
 		name, parameters, hasParameters := strings.Cut(part, ";")
 		name = strings.TrimSpace(name)
@@ -338,15 +394,17 @@ func acceptsGzipEncoding(header string) bool {
 		}
 		switch {
 		case strings.EqualFold(name, "gzip"):
-			best = quality
+			preferences.gzip = quality
+			preferences.hasGzip = true
+		case strings.EqualFold(name, "identity"):
+			preferences.identity = quality
+			preferences.hasIdentity = true
 		case name == "*":
-			wildcard = quality
+			preferences.wildcard = quality
+			preferences.hasWildcard = true
 		}
 	}
-	if best >= 0 {
-		return best > 0
-	}
-	return wildcard > 0
+	return preferences
 }
 
 func cacheControl(maxAge int, immutable bool) string {

@@ -78,3 +78,39 @@ func TestValidateID(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateNormalizesPolicyLists(t *testing.T) {
+	cfg := Default()
+	cfg.AllowedHosts = []string{" maps.example.test ", "maps.example.test"}
+	cfg.CORS.Origins = []string{" https://client.example ", "https://client.example"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AllowedHosts) != 1 || cfg.AllowedHosts[0] != "maps.example.test" {
+		t.Fatalf("unexpected allowed hosts: %#v", cfg.AllowedHosts)
+	}
+	if len(cfg.CORS.Origins) != 1 || cfg.CORS.Origins[0] != "https://client.example" {
+		t.Fatalf("unexpected CORS origins: %#v", cfg.CORS.Origins)
+	}
+}
+
+func TestValidateRejectsInvalidPolicies(t *testing.T) {
+	for name, configure := range map[string]func(*Config){
+		"blank allowed hosts": func(cfg *Config) { cfg.AllowedHosts = []string{" "} },
+		"malformed wildcard":  func(cfg *Config) { cfg.AllowedHosts = []string{"maps.*.example"} },
+		"wildcard with port":  func(cfg *Config) { cfg.AllowedHosts = []string{"*.example.test:8443"} },
+		"origin with path":    func(cfg *Config) { cfg.CORS.Origins = []string{"https://client.example/path"} },
+		"wildcard credentials": func(cfg *Config) {
+			cfg.CORS.Origins = []string{" * "}
+			cfg.CORS.AllowCredentials = true
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Default()
+			configure(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected policy validation to fail")
+			}
+		})
+	}
+}

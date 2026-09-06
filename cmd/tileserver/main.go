@@ -61,11 +61,16 @@ func run(args []string) (resultErr error) {
 	flags.StringVar(&allowedHosts, "allowed-hosts", allowedHosts, "comma-separated allowed Host names")
 	flags.BoolVar(&cfg.TrustProxy, "trust-proxy", cfg.TrustProxy, "trust X-Forwarded-Host and X-Forwarded-Proto")
 	flags.StringVar(&corsOrigins, "cors-origins", corsOrigins, "comma-separated allowed CORS origins")
+	flags.BoolVar(&cfg.CORS.AllowCredentials, "cors-credentials", cfg.CORS.AllowCredentials, "allow credentials for configured CORS origins")
 	flags.IntVar(&cfg.Cache.SizeMB, "cache-size", cfg.Cache.SizeMB, "in-memory tile cache size in MiB")
 	flags.IntVar(&cfg.Cache.TileMaxAge, "tile-max-age", cfg.Cache.TileMaxAge, "tile browser/CDN cache lifetime in seconds")
+	flags.IntVar(&cfg.Cache.MetadataMaxAge, "metadata-max-age", cfg.Cache.MetadataMaxAge, "metadata browser/CDN cache lifetime in seconds")
+	flags.BoolVar(&cfg.Cache.CompressVectorTiles, "compress-vector-tiles", cfg.Cache.CompressVectorTiles, "gzip uncompressed vector tiles when accepted")
 	flags.IntVar(&cfg.Database.MaxConnections, "db-connections", cfg.Database.MaxConnections, "SQLite connections per source")
 	flags.IntVar(&cfg.Database.MmapSizeMB, "mmap-size", cfg.Database.MmapSizeMB, "SQLite mmap size per source in MiB")
+	flags.IntVar(&cfg.Database.PageCacheMB, "page-cache-size", cfg.Database.PageCacheMB, "SQLite page-cache budget per source in MiB")
 	flags.IntVar(&cfg.HTTP.MaxConcurrent, "max-concurrent", cfg.HTTP.MaxConcurrent, "maximum concurrent HTTP requests")
+	flags.IntVar(&cfg.HTTP.MaxHeaderBytes, "max-header-bytes", cfg.HTTP.MaxHeaderBytes, "maximum HTTP request-header size in bytes")
 	flags.DurationVar(&readHeaderTimeout, "read-header-timeout", readHeaderTimeout, "HTTP read-header timeout")
 	flags.DurationVar(&readTimeout, "read-timeout", readTimeout, "HTTP read timeout")
 	flags.DurationVar(&writeTimeout, "write-timeout", writeTimeout, "HTTP write timeout")
@@ -183,21 +188,27 @@ func run(args []string) (resultErr error) {
 }
 
 func findConfigPath(args []string) (string, error) {
+	var path string
 	for index, arg := range args {
+		if arg == "--" {
+			break
+		}
 		if arg == "--config" || arg == "-config" {
 			if index+1 >= len(args) || strings.HasPrefix(args[index+1], "-") {
 				return "", errors.New("flag needs an argument: -config")
 			}
-			return args[index+1], nil
+			path = args[index+1]
+			continue
 		}
 		if value, ok := strings.CutPrefix(arg, "--config="); ok {
-			return value, nil
+			path = value
+			continue
 		}
 		if value, ok := strings.CutPrefix(arg, "-config="); ok {
-			return value, nil
+			path = value
 		}
 	}
-	return "", nil
+	return path, nil
 }
 
 func splitList(value string) []string {
