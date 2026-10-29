@@ -164,7 +164,7 @@ func (s *Server) serveWMTSTile(w http.ResponseWriter, r *http.Request, store *mb
 	if s.cfg.Observability.Metrics {
 		s.metrics.tileRequests.Add(1)
 	}
-	encodings := parseEncodingPreferences(r.Header.Get("Accept-Encoding"))
+	encodings := parseEncodingPreferences(strings.Join(r.Header.Values("Accept-Encoding"), ","))
 	value, loadErr := s.cachedTile(r, store, z, x, y, encodings.prefersGzip())
 	if loadErr != nil {
 		if r.Context().Err() != nil {

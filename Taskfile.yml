@@ -39,9 +39,9 @@ tasks:
       - go tool cover -func=coverage.out
 
   bench:
-    desc: Benchmark cache, coalescing, and HTTP response paths
+    desc: Benchmark cache, coalescing, metadata loading, and HTTP response paths
     cmds:
-      - go test ./internal/cache ./internal/flight ./internal/server -run '^$' -bench . -benchmem
+      - go test ./internal/cache ./internal/flight ./internal/mbtiles ./internal/server -run '^$' -bench . -benchmem
 
   vet:
     desc: Run Go static analysis
@@ -54,7 +54,7 @@ tasks:
       - go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
   lint:
-    desc: Run golangci-lint in a Docker container
+    desc: Run the installed golangci-lint
     cmds:
       - golangci-lint run -v --timeout 5m
 

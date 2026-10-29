@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ralscha/tileserver-go/internal/cache"
@@ -19,6 +20,11 @@ import (
 )
 
 const maxExpandedTileSize = 64 << 20
+
+var gzipWriters = sync.Pool{New: func() any {
+	writer, _ := gzip.NewWriterLevel(io.Discard, gzip.BestSpeed)
+	return writer
+}}
 
 func (s *Server) serveTilePath(w http.ResponseWriter, r *http.Request) {
 	s.serveTile(w, r, r.PathValue("id"), r.PathValue("z"), r.PathValue("x"), r.PathValue("tile"))
@@ -53,7 +59,7 @@ func (s *Server) serveTile(w http.ResponseWriter, r *http.Request, id, zText, xT
 		s.writeError(w, http.StatusNotFound, "tile not found")
 		return
 	}
-	encodings := parseEncodingPreferences(r.Header.Get("Accept-Encoding"))
+	encodings := parseEncodingPreferences(strings.Join(r.Header.Values("Accept-Encoding"), ","))
 	value, loadErr := s.cachedTile(r, store, z, x, y, encodings.prefersGzip())
 	if loadErr != nil {
 		if r.Context().Err() != nil {
@@ -101,7 +107,7 @@ func (s *Server) serveGrid(w http.ResponseWriter, r *http.Request, store *mbtile
 		s.writeError(w, http.StatusNotFound, "grid not found")
 		return
 	}
-	encodings := parseEncodingPreferences(r.Header.Get("Accept-Encoding"))
+	encodings := parseEncodingPreferences(strings.Join(r.Header.Values("Accept-Encoding"), ","))
 	wantsGzip := encodings.prefersGzip()
 	key := cache.NewGridKey(store.ID(), z, x, y, wantsGzip)
 	value, loadErr := s.cachedResponse(r, key, func(ctx context.Context) (cache.Value, error) {
@@ -187,6 +193,9 @@ func (s *Server) loadGrid(ctx context.Context, store *mbtiles.Store, z, x, y int
 		var document map[string]json.RawMessage
 		if err := json.Unmarshal(data, &document); err != nil {
 			return cache.Value{}, fmt.Errorf("decode grid: %w", err)
+		}
+		if document == nil {
+			return cache.Value{}, errors.New("decode grid: expected a JSON object")
 		}
 		encodedData, marshalErr := json.Marshal(gridData)
 		if marshalErr != nil {
@@ -313,17 +322,23 @@ func expandGzip(data []byte) ([]byte, error) {
 func compressGzip(data []byte) ([]byte, error) {
 	var output bytes.Buffer
 	output.Grow(len(data) / 2)
-	writer, err := gzip.NewWriterLevel(&output, gzip.BestSpeed)
-	if err != nil {
-		return nil, err
-	}
+	writer := gzipWriters.Get().(*gzip.Writer)
+	writer.Reset(&output)
+	defer func() {
+		writer.Reset(io.Discard)
+		gzipWriters.Put(writer)
+	}()
 	if _, err := writer.Write(data); err != nil {
 		return nil, err
 	}
 	if err := writer.Close(); err != nil {
 		return nil, err
 	}
-	return output.Bytes(), nil
+	compressed := output.Bytes()
+	if cap(compressed) > 2*len(compressed) {
+		compressed = bytes.Clone(compressed)
+	}
+	return compressed, nil
 }
 
 func acceptsGzipEncoding(header string) bool {

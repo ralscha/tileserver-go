@@ -53,6 +53,24 @@ func TestCacheConcurrentAccess(t *testing.T) {
 	}
 }
 
+func TestCacheAccountsForRetainedData(t *testing.T) {
+	cache := New(shardCount * 1024)
+	key := NewTileKey("tiles", 0, 0, 0, false)
+	cache.Add(key, Value{Data: make([]byte, 1, 512)})
+	if _, ok := cache.Get(key); !ok {
+		t.Fatal("small backing array was not cached")
+	}
+	if stats := cache.Stats(); stats.Bytes < 512 {
+		t.Fatalf("cache reports %d bytes while retaining a 512-byte array", stats.Bytes)
+	}
+
+	oversized := NewTileKey("tiles", 1, 0, 0, false)
+	cache.Add(oversized, Value{Data: make([]byte, 1, 2048)})
+	if _, ok := cache.Get(oversized); ok {
+		t.Fatal("cached a backing array larger than the shard budget")
+	}
+}
+
 func TestHashKeyDistributesCorrelatedCoordinates(t *testing.T) {
 	const keyCount = 4096
 	counts := make([]int, shardCount)

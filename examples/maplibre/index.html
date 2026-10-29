@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>tileserver-go · MapLibre example</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.5.0/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.css">
   <style>
     html, body, #map { height: 100%; margin: 0; }
     aside {
@@ -27,10 +27,14 @@
   <div id="map"></div>
   <aside><span id="example-name">MapLibre example</span> · <a id="tilejson-link">TileJSON</a></aside>
   <script type="module">
-    import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.5.0/dist/maplibre-gl.mjs';
+    import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.mjs';
 
     const parameters = new URLSearchParams(window.location.search);
-    const server = (parameters.get('server') || 'http://localhost:8080').replace(/\/+$/, '');
+    const serverURL = new URL(parameters.get('server') || 'http://localhost:8080');
+    if (!['http:', 'https:'].includes(serverURL.protocol) || serverURL.username || serverURL.password || /[?#]/.test(serverURL.href)) {
+      throw new Error('server must be an HTTP(S) URL without credentials, query, or fragment');
+    }
+    const server = serverURL.href.replace(/\/+$/, '');
     const examples = {
       liechtenstein: {
         style: './liechtenstein.json',
@@ -41,7 +45,8 @@
         source: 'openmaptiles',
       },
     };
-    const example = examples[parameters.get('style')] || examples.liechtenstein;
+    const exampleName = parameters.get('style');
+    const example = Object.hasOwn(examples, exampleName) ? examples[exampleName] : examples.liechtenstein;
     const sourceID = parameters.get('source') || example.source;
     const tileJSONURL = `${server}/data/${encodeURIComponent(sourceID)}.json`;
     const style = await fetch(example.style).then((response) => {

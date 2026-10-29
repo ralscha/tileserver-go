@@ -9,4 +9,7 @@ files
 dist
 *.mbtiles
 tileserver
-tileserver.exe
+*.exe
+*.test
+*.prof
+coverage.out

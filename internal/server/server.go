@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -124,21 +125,28 @@ func discoverSources(cfg config.Config) (map[string]string, error) {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", s.serveCatalog)
-	mux.HandleFunc("GET /health", s.serveHealth)
-	mux.HandleFunc("GET /healthz", s.serveHealthJSON)
-	mux.HandleFunc("GET /readyz", s.serveReadyJSON)
-	if s.cfg.Observability.Metrics {
-		mux.HandleFunc("GET /metrics", s.serveMetrics)
+	basePath := (&url.URL{Path: s.cfg.BasePath}).EscapedPath()
+	handle := func(path string, handler http.HandlerFunc) {
+		mux.HandleFunc("GET "+basePath+path, handler)
 	}
-	mux.HandleFunc("GET /status.json", s.serveStatus)
-	mux.HandleFunc("GET /data.json", s.serveDataIndex)
-	mux.HandleFunc("GET /index.json", s.serveCatalog)
-	mux.HandleFunc("GET /data/{id}", s.serveDataDocument)
-	mux.HandleFunc("GET /data/{id}/wmts.xml", s.serveSourceWMTS)
-	mux.HandleFunc("GET /data/{id}/{z}/{x}/{tile}", s.serveTilePath)
-	mux.HandleFunc("GET /tiles/{id}/{z}/{x}/{tile}", s.serveTilePath)
-	mux.HandleFunc("GET /wmts", s.serveWMTS)
+	if basePath != "" {
+		handle("", s.serveCatalog)
+	}
+	handle("/{$}", s.serveCatalog)
+	handle("/health", s.serveHealth)
+	handle("/healthz", s.serveHealthJSON)
+	handle("/readyz", s.serveReadyJSON)
+	if s.cfg.Observability.Metrics {
+		handle("/metrics", s.serveMetrics)
+	}
+	handle("/status.json", s.serveStatus)
+	handle("/data.json", s.serveDataIndex)
+	handle("/index.json", s.serveCatalog)
+	handle("/data/{id}", s.serveDataDocument)
+	handle("/data/{id}/wmts.xml", s.serveSourceWMTS)
+	handle("/data/{id}/{z}/{x}/{tile}", s.serveTilePath)
+	handle("/tiles/{id}/{z}/{x}/{tile}", s.serveTilePath)
+	handle("/wmts", s.serveWMTS)
 	mux.HandleFunc("GET /{path...}", func(w http.ResponseWriter, _ *http.Request) {
 		s.writeError(w, http.StatusNotFound, "endpoint not found")
 	})

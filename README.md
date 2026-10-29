@@ -98,7 +98,7 @@ go run ./cmd/exampleserver
 ```
 
 Then open <http://localhost:3000>. tileserver-go serves only the vector tiles and TileJSON. The
-consumer owns the style and loads [MapLibre GL JS 6.5.0](https://github.com/maplibre/maplibre-gl-js)
+consumer owns the style and loads [MapLibre GL JS 6.16.0](https://github.com/maplibre/maplibre-gl-js/releases/tag/v6.16.0)
 from UNPKG. Its text labels use the public MapLibre demo glyph endpoint, so the example requires
 internet access unless those dependencies are replaced with local files.
 
@@ -191,7 +191,7 @@ task format          # modernize and format Go code
 task test            # run all tests
 task test:cover      # run tests and print coverage
 task verify          # run tests, vet, and build a static binary
-task lint            # run golangci-lint through Docker
+task lint            # run the installed golangci-lint
 task vuln            # scan reachable Go code for known vulnerabilities
 task release:check   # validate the GoReleaser configuration
 task release:snapshot # build local release archives without publishing
@@ -200,6 +200,13 @@ task release:verify  # run every pre-release check
 ```
 
 Tests construct real MBTiles databases and exercise the HTTP compatibility surface, compression variants, caching validators, TMS conversion, security boundaries, and WMTS.
+
+SQLite's [compatibility guidance](https://pkg.go.dev/modernc.org/sqlite#hdr-Fragile_modernc_org_libc_dependency)
+recommends matching the `modernc.org/libc` version in the driver's `go.mod`. This project
+deliberately uses `modernc.org/libc` v1.79.1 with `modernc.org/sqlite` v1.61.0, overriding
+the driver's v1.79.0 requirement to include the `TLS.Close` memory cleanup fix. The patch
+changes no public API or type layouts, and the project tests pass with this pairing.
+Review compatibility and run the test suite when updating either dependency.
 
 ## Continuous integration and releases
 

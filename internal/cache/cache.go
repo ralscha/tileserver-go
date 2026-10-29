@@ -117,7 +117,7 @@ func (c *Cache) Add(key Key, value Value) {
 	if s.capacity <= 0 {
 		return
 	}
-	size := int64(len(key.Source)+len(value.Data)+len(value.ETag)+len(value.ContentType)+len(value.ContentEncoding)) + 160
+	size := int64(len(key.Source)+cap(value.Data)+len(value.ETag)+len(value.ContentType)+len(value.ContentEncoding)) + 160
 	if size > s.capacity {
 		return
 	}

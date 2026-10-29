@@ -33,6 +33,40 @@ func TestLoadRejectsTrailingData(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsNull(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(" \nnull\n "), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected null configuration to fail")
+	}
+}
+
+func TestLoadPreservesDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"listen":":9090","cache":{"size_mb":12}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != ":9090" || cfg.Cache.SizeMB != 12 || cfg.Cache.TileMaxAge != Default().Cache.TileMaxAge {
+		t.Fatalf("loaded config lost defaults or overrides: %+v", cfg)
+	}
+}
+
+func TestNormalizeRejectsInvalidPublicURL(t *testing.T) {
+	for _, publicURL := range []string{"https://:443", "https://maps.example?", "https://maps.example#", "https://maps.example?key=value", "https://maps.example#fragment"} {
+		cfg := Default()
+		cfg.PublicURL = publicURL
+		if err := cfg.Normalize(t.TempDir()); err == nil {
+			t.Errorf("Normalize() accepted public URL %q", publicURL)
+		}
+	}
+}
+
 func TestNormalizePublicURLAndPaths(t *testing.T) {
 	root := t.TempDir()
 	cfg := Default()
@@ -96,10 +130,13 @@ func TestValidateNormalizesPolicyLists(t *testing.T) {
 
 func TestValidateRejectsInvalidPolicies(t *testing.T) {
 	for name, configure := range map[string]func(*Config){
-		"blank allowed hosts": func(cfg *Config) { cfg.AllowedHosts = []string{" "} },
-		"malformed wildcard":  func(cfg *Config) { cfg.AllowedHosts = []string{"maps.*.example"} },
-		"wildcard with port":  func(cfg *Config) { cfg.AllowedHosts = []string{"*.example.test:8443"} },
-		"origin with path":    func(cfg *Config) { cfg.CORS.Origins = []string{"https://client.example/path"} },
+		"blank allowed hosts":        func(cfg *Config) { cfg.AllowedHosts = []string{" "} },
+		"malformed wildcard":         func(cfg *Config) { cfg.AllowedHosts = []string{"maps.*.example"} },
+		"wildcard with port":         func(cfg *Config) { cfg.AllowedHosts = []string{"*.example.test:8443"} },
+		"origin with path":           func(cfg *Config) { cfg.CORS.Origins = []string{"https://client.example/path"} },
+		"origin without host":        func(cfg *Config) { cfg.CORS.Origins = []string{"https://:443"} },
+		"origin with empty query":    func(cfg *Config) { cfg.CORS.Origins = []string{"https://client.example?"} },
+		"origin with empty fragment": func(cfg *Config) { cfg.CORS.Origins = []string{"https://client.example#"} },
 		"wildcard credentials": func(cfg *Config) {
 			cfg.CORS.Origins = []string{" * "}
 			cfg.CORS.AllowCredentials = true

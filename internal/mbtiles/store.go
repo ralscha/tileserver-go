@@ -130,7 +130,10 @@ func Open(ctx context.Context, id, path string, options Options) (*Store, error)
 func sqliteDSN(path string, options Options) string {
 	// SQLite expects a drive-letter URI such as file:C:/maps/world.mbtiles on Windows;
 	// url.URL.Path would incorrectly produce file:///C:/... for this driver.
-	u := &url.URL{Scheme: "file", Opaque: filepath.ToSlash(path)}
+	// Opaque is not escaped by URL.String, so escape filename characters such as
+	// %, #, and ? before they can be interpreted as URI syntax.
+	uriPath := &url.URL{Path: filepath.ToSlash(path)}
+	u := &url.URL{Scheme: "file", Opaque: uriPath.EscapedPath()}
 	query := u.Query()
 	query.Set("mode", "ro")
 	query.Set("immutable", "1")
@@ -290,7 +293,7 @@ func (s *Store) loadMetadata(ctx context.Context) error {
 	maxZoom, maxOK := parseZoom(raw["maxzoom"])
 	if !minOK || !maxOK {
 		var foundMin, foundMax sql.NullInt64
-		if err := s.db.QueryRowContext(ctx, `SELECT min(zoom_level), max(zoom_level) FROM tiles`).Scan(&foundMin, &foundMax); err != nil {
+		if err := s.db.QueryRowContext(ctx, `SELECT (SELECT min(zoom_level) FROM tiles), (SELECT max(zoom_level) FROM tiles)`).Scan(&foundMin, &foundMax); err != nil {
 			return fmt.Errorf("derive zoom range: %w", err)
 		}
 		if !minOK && foundMin.Valid {

@@ -184,21 +184,11 @@ func firstHeaderValue(value string) string {
 
 func (s *Server) basePathMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == s.cfg.BasePath {
-			clone := r.Clone(r.Context())
-			clone.URL.Path = "/"
-			next.ServeHTTP(w, clone)
-			return
-		}
-		prefix := s.cfg.BasePath + "/"
-		if !strings.HasPrefix(r.URL.Path, prefix) {
+		if r.URL.Path != s.cfg.BasePath && !strings.HasPrefix(r.URL.Path, s.cfg.BasePath+"/") {
 			s.writeError(w, http.StatusNotFound, "endpoint not found")
 			return
 		}
-		clone := r.Clone(r.Context())
-		clone.URL.Path = strings.TrimPrefix(r.URL.Path, s.cfg.BasePath)
-		clone.URL.RawPath = ""
-		next.ServeHTTP(w, clone)
+		next.ServeHTTP(w, r)
 	})
 }
 

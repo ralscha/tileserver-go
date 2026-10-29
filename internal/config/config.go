@@ -133,8 +133,12 @@ func Load(path string) (Config, error) {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
+	loaded := &cfg
+	if err := decoder.Decode(&loaded); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
+	}
+	if loaded == nil {
+		return Config{}, errors.New("decode config: configuration must be a JSON object")
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		if err == nil {
@@ -166,7 +170,7 @@ func (c *Config) Normalize(root string) error {
 	}
 	if c.PublicURL != "" {
 		u, parseErr := url.Parse(c.PublicURL)
-		if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.ForceQuery || u.RawQuery != "" || strings.Contains(c.PublicURL, "#") {
 			return errors.New("public_url must be an absolute http(s) URL without credentials, query, or fragment")
 		}
 		u.Path = strings.TrimRight(u.Path, "/") + c.BasePath
@@ -224,7 +228,7 @@ func (c *Config) Validate() error {
 			continue
 		}
 		u, err := url.Parse(origin)
-		if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		if err != nil || u.Scheme == "" || u.Hostname() == "" || u.User != nil || u.Path != "" || u.ForceQuery || u.RawQuery != "" || strings.Contains(origin, "#") {
 			return fmt.Errorf("cors.origins entry %q must be an origin without credentials, path, query, or fragment", origin)
 		}
 	}
